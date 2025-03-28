@@ -78,7 +78,7 @@ class Dependency<T>{
 
 class Provider<T>{
   final Map<Provider<T>, Dependency<T>> _dependencies = {};
-  final Set _listeners = {};
+  final Set<Function(T)> _listeners = {};
   late final ProviderCore<T> _core; 
   late final String _name;
 
@@ -128,7 +128,9 @@ class Provider<T>{
   }
 
   void _notifyListeners(T newValue){
-    _listeners.forEach((listener) => listener(newValue));
+    for (Function(T) listener in _listeners) {
+      listener(newValue);
+    }
   }
 
   ProviderRef<T> _createRef(){
