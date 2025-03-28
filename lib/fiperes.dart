@@ -1,5 +1,8 @@
 library fiperes;
 
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+
 class ProviderCore<T>{
   T Function(ProviderRef<T>) createFn;
   T value;
@@ -11,6 +14,8 @@ class ProviderCore<T>{
 }
 
 class ProviderRef<T>{
+  final ProviderObserver _observer = ProviderObserver();
+
   final Provider<T> provider;
 
   ProviderRef({
@@ -26,10 +31,11 @@ class ProviderRef<T>{
     provider.update(updateFn);
     final newValue = provider.read();
 
-
+    _observer.logUpdate(provider, oldValue, newValue);
   }
 
   void watch(Provider<T> otherProvider, T Function(T) updateFn){
+    _observer.addDependency(provider, otherProvider);
     provider._addDependency(
       otherProvider, 
       Dependency(
@@ -103,9 +109,7 @@ class Provider<T>{
   Function() watch(Function(T) listener, { bool immediate = true }){
     _listeners.add(listener);
 
-    if(immediate){
-      listener(read());
-    }
+    if(immediate) listener(read());
 
     return () {
       _listeners.remove(listener);
@@ -115,6 +119,9 @@ class Provider<T>{
   void update(T Function(T) updateFn){
     final T currentValue = read();
     final T newValue = updateFn(currentValue);
+
+    final ProviderObserver observer = ProviderObserver();
+    observer.logUpdate(this, currentValue, newValue);
 
     _core.value = newValue;
     _notifyListeners(newValue);
@@ -133,7 +140,125 @@ class Provider<T>{
   }
 
   void unsubscribedDependency(Provider<T> parentProvider){
+    final ProviderObserver observer = ProviderObserver();
+
     _dependencies[parentProvider]?.unsubscribedParent();
     _dependencies.remove(parentProvider);
+
+    observer.deleteDependency(this, parentProvider);
+  }
+}
+
+class ProviderObserver {
+  static ProviderObserver? _instance;
+  factory ProviderObserver() {
+    _instance ??= ProviderObserver._();
+    return _instance!;
+  }
+
+  ProviderObserver._();
+
+  final Map<Provider<dynamic>, Set<Provider<dynamic>>> dependencyGraph = {};
+  final List<Map<String, dynamic>> updateHistory = [];
+  bool _isOutedLog = true;
+
+  void outLogs(bool isOutedLog) {
+    _isOutedLog = isOutedLog;
+  }
+
+  void addDependency(Provider<dynamic> childProvider, Provider<dynamic> parentProvider) {
+    if (!dependencyGraph.containsKey(childProvider)) {
+      dependencyGraph[childProvider] = <Provider<dynamic>>{};
+    }
+    dependencyGraph[childProvider]!.add(parentProvider);
+    log('Dependency added: ${_getProviderInfo(childProvider)} depends on ${_getProviderInfo(parentProvider)}');
+  }
+
+  void deleteDependency(Provider<dynamic> childProvider, Provider<dynamic> parentProvider) {
+    if (dependencyGraph.containsKey(childProvider)) {
+      dependencyGraph[childProvider]!.remove(parentProvider);
+    }
+    log('Dependency deleted: ${_getProviderInfo(childProvider)} unsubscribed ${_getProviderInfo(parentProvider)}');
+  }
+
+  bool _isLargeObject(dynamic obj, {int maxSize = 1024 * 10}) {
+    try {
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(obj)));
+      return bytes.length > maxSize;
+    } catch (e) {
+      debugPrint('オブジェクトの解析中にエラーが発生しました: $e');
+      return true;
+    }
+  }
+
+  void logUpdate(Provider<dynamic> provider, dynamic oldValue, dynamic newValue) {
+    String? formatValue(dynamic value) {
+      if (value == null) return null;
+      return value.toString();
+    }
+
+    oldValue = formatValue(oldValue);
+    newValue = formatValue(newValue);
+
+    if (_isLargeObject(oldValue)) {
+      oldValue = 'Large Object (simplified)';
+    }
+
+    if (_isLargeObject(newValue)) {
+      newValue = 'Large Object (simplified)';
+    }
+
+    final record = {
+      'timestamp': DateTime.now(),
+      'provider': provider._name,
+      'oldValue': oldValue,
+      'newValue': newValue,
+      'stackTrace': _getStackTrace()
+    };
+
+    updateHistory.add(record);
+
+    log('Update: ${record['provider']} changed from ${jsonEncode(oldValue)} to ${jsonEncode(newValue)}');
+  }
+
+  Map<String, List<String>> getDependencyGraph() {
+    final graph = <String, List<String>>{};
+    dependencyGraph.forEach((provider, dependencies) {
+      graph[_getProviderInfo(provider)] = 
+          dependencies.map((dep) => _getProviderInfo(dep)).toList();
+    });
+    return graph;
+  }
+
+  List<Map<String, dynamic>> getAllUpdateHistory() => updateHistory;
+
+  List<Map<String, dynamic>> getFilteredUpdateHistory(Provider<dynamic> provider) {
+    return updateHistory.where((history) =>
+        history['provider'] == _getProviderInfo(provider)
+    ).toList();
+  }
+
+  String _getProviderInfo(Provider<dynamic> provider) => provider._name;
+
+  String _getStackTrace() {
+    final error = Error();
+    final String stackTrace = error.stackTrace.toString();
+    return stackTrace;
+  }
+
+  void log(String message, [dynamic obj]) {
+    if (!_isOutedLog) return;
+    
+    final baseMessage = '[ProviderObserver] $message';
+    
+    if (obj != null) {
+      debugPrint('$baseMessage ${jsonEncode(obj)}');
+    } else {
+      debugPrint(baseMessage);
+    }
+  }
+
+  static void clearInstance() {
+    _instance = null;
   }
 }
